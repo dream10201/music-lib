@@ -22,6 +22,74 @@ type Migu struct {
 	cookie string
 }
 
+var (
+	miguSearchAPI       = "http://pd.musicapp.migu.cn/MIGUM2.0/v1.0/content/search_all.do"
+	miguResourceInfoAPI = "https://app.c.nf.migu.cn/MIGUM2.0/v1.0/content/resourceinfo.do"
+	miguAlbumSongAPI    = "https://app.c.nf.migu.cn/MIGUM2.0/v1.0/content/queryAlbumSong"
+)
+
+const (
+	// miguSearchPageSize 搜索接口固定每页 20 条，pageSize 参数不生效。
+	miguSearchPageSize = 20
+	// miguSearchMaxPages 搜索最多翻页数，用于限制单次搜索的请求次数。
+	miguSearchMaxPages = 5
+)
+
+// searchPages 逐页请求搜索接口，直到本页不满、累计条数达到总数或翻满 miguSearchMaxPages。
+// parse 处理单页响应，返回本页原始条数与接口给出的总数。
+func (m *Migu) searchPages(keyword, searchSwitch string, parse func(body []byte) (pageCount int, total int, err error)) error {
+	collected := 0
+	totalCount := 0
+	for pageNo := 1; pageNo <= miguSearchMaxPages; pageNo++ {
+		body, err := m.searchRequest(keyword, searchSwitch, pageNo)
+		if err != nil {
+			if pageNo == 1 {
+				return err
+			}
+			return nil
+		}
+		pageCount, total, err := parse(body)
+		if err != nil {
+			if pageNo == 1 {
+				return err
+			}
+			return nil
+		}
+		if totalCount == 0 {
+			totalCount = total
+		}
+		collected += pageCount
+		if pageCount < miguSearchPageSize {
+			return nil
+		}
+		if totalCount > 0 && collected >= totalCount {
+			return nil
+		}
+	}
+	return nil
+}
+
+func miguTotalCount(n json.Number) int {
+	total, _ := strconv.Atoi(n.String())
+	return total
+}
+
+func (m *Migu) searchRequest(keyword, searchSwitch string, pageNo int) ([]byte, error) {
+	params := url.Values{}
+	params.Set("ua", "Android_migu")
+	params.Set("version", "5.0.1")
+	params.Set("text", keyword)
+	params.Set("pageNo", strconv.Itoa(pageNo))
+	params.Set("pageSize", strconv.Itoa(miguSearchPageSize))
+	params.Set("searchSwitch", searchSwitch)
+
+	return utils.Get(miguSearchAPI+"?"+params.Encode(),
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Referer", Referer),
+		utils.WithHeader("Cookie", m.cookie),
+	)
+}
+
 func New(cookie string) *Migu { return &Migu{cookie: cookie} }
 
 var defaultMigu = New("")
@@ -37,7 +105,7 @@ func (m *Migu) fetchPlaylistInfo(id string) (*model.Playlist, error) {
 	params.Set("resourceType", "2021")
 	params.Set("resourceId", playlistID)
 
-	apiURL := "https://app.c.nf.migu.cn/MIGUM2.0/v1.0/content/resourceinfo.do?" + params.Encode()
+	apiURL := miguResourceInfoAPI + "?" + params.Encode()
 	body, err := utils.Get(apiURL,
 		utils.WithHeader("User-Agent", UserAgent),
 		utils.WithHeader("Referer", Referer),
@@ -136,7 +204,6 @@ func (m *Migu) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, er
 	return playlist, songs, nil
 }
 
-// Parse 解析链接并获取完整信息
 func (m *Migu) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error) {
 	albumID := strings.TrimSpace(id)
 	if albumID == "" {
@@ -148,19 +215,43 @@ func (m *Migu) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error
 		return nil, nil, err
 	}
 
+	album, err := m.fetchAlbumInfo(albumID)
+	if err != nil {
+		digital, digitalErr := m.fetchDigitalAlbumInfo(albumID)
+		if digitalErr != nil {
+			return nil, nil, err
+		}
+		album = digital.toPlaylist(albumID)
+	}
+
+	if album.TrackCount == 0 {
+		if totalSongs > 0 {
+			album.TrackCount = totalSongs
+		} else {
+			album.TrackCount = len(songs)
+		}
+	}
+	if album.Cover == "" && len(songs) > 0 {
+		album.Cover = songs[0].Cover
+	}
+
+	return album, songs, nil
+}
+
+func (m *Migu) fetchAlbumInfo(albumID string) (*model.Playlist, error) {
 	params := url.Values{}
 	params.Set("needSimple", "00")
 	params.Set("resourceType", "2003")
 	params.Set("resourceId", albumID)
 
-	apiURL := "https://app.c.nf.migu.cn/MIGUM2.0/v1.0/content/resourceinfo.do?" + params.Encode()
+	apiURL := miguResourceInfoAPI + "?" + params.Encode()
 	body, err := utils.Get(apiURL,
 		utils.WithHeader("User-Agent", UserAgent),
 		utils.WithHeader("Referer", Referer),
 		utils.WithHeader("Cookie", m.cookie),
 	)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	var resp struct {
@@ -186,27 +277,20 @@ func (m *Migu) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error
 	}
 
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, nil, fmt.Errorf("migu album detail json parse error: %w", err)
+		return nil, fmt.Errorf("migu album detail json parse error: %w", err)
 	}
 	if resp.Code != "" && resp.Code != "000000" {
-		return nil, nil, fmt.Errorf("migu api error: %s (code %s)", resp.Info, resp.Code)
+		return nil, fmt.Errorf("migu api error: %s (code %s)", resp.Info, resp.Code)
 	}
 	if len(resp.Resource) == 0 {
-		return nil, nil, errors.New("album not found")
+		return nil, errors.New("album not found")
 	}
 
 	info := resp.Resource[0]
 	albumID = firstNonEmpty(strings.TrimSpace(info.AlbumID), albumID)
 	trackCount, _ := strconv.Atoi(strings.TrimSpace(info.TotalCount))
-	if trackCount == 0 {
-		if totalSongs > 0 {
-			trackCount = totalSongs
-		} else {
-			trackCount = len(songs)
-		}
-	}
 
-	album := &model.Playlist{
+	return &model.Playlist{
 		Source:      "migu",
 		ID:          albumID,
 		Name:        strings.TrimSpace(info.Title),
@@ -228,17 +312,114 @@ func (m *Migu) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error
 			"language":        strings.TrimSpace(info.Language),
 			"translate_name":  strings.TrimSpace(info.TranslateName),
 		},
-	}
-
-	return album, songs, nil
+	}, nil
 }
 
+// miguDigitalAlbumInfo 数字专辑（resourceType=5）信息，MaterialID 为其对应的普通专辑 ID。
+type miguDigitalAlbumInfo struct {
+	MaterialID  string
+	Title       string
+	Singer      string
+	Summary     string
+	TotalCount  int
+	PublishDate string
+	Cover       string
+}
+
+func (d *miguDigitalAlbumInfo) toPlaylist(albumID string) *model.Playlist {
+	return &model.Playlist{
+		Source:      "migu",
+		ID:          albumID,
+		Name:        d.Title,
+		Cover:       d.Cover,
+		TrackCount:  d.TotalCount,
+		Creator:     d.Singer,
+		Description: d.Summary,
+		Link:        miguAlbumLink(albumID),
+		Extra: map[string]string{
+			"type":          "album",
+			"album_id":      albumID,
+			"material_id":   d.MaterialID,
+			"resource_type": "5",
+			"publish_date":  d.PublishDate,
+		},
+	}
+}
+
+func (m *Migu) fetchDigitalAlbumInfo(albumID string) (*miguDigitalAlbumInfo, error) {
+	params := url.Values{}
+	params.Set("needSimple", "00")
+	params.Set("resourceType", "5")
+	params.Set("resourceId", albumID)
+
+	body, err := utils.Get(miguResourceInfoAPI+"?"+params.Encode(),
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Referer", Referer),
+		utils.WithHeader("Cookie", m.cookie),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Code     string `json:"code"`
+		Info     string `json:"info"`
+		Resource []struct {
+			MaterialID  string          `json:"materialId"`
+			Title       string          `json:"title"`
+			Singer      string          `json:"singer"`
+			Summary     string          `json:"summary"`
+			TotalCount  string          `json:"totalCount"`
+			PublishDate string          `json:"publishDate"`
+			ImgItem     []miguImageItem `json:"imgItem"`
+		} `json:"resource"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("migu digital album json parse error: %w", err)
+	}
+	if resp.Code != "" && resp.Code != "000000" {
+		return nil, fmt.Errorf("migu api error: %s (code %s)", resp.Info, resp.Code)
+	}
+	if len(resp.Resource) == 0 {
+		return nil, errors.New("digital album not found")
+	}
+
+	info := resp.Resource[0]
+	totalCount, _ := strconv.Atoi(strings.TrimSpace(info.TotalCount))
+	return &miguDigitalAlbumInfo{
+		MaterialID:  strings.TrimSpace(info.MaterialID),
+		Title:       strings.TrimSpace(info.Title),
+		Singer:      strings.TrimSpace(info.Singer),
+		Summary:     strings.TrimSpace(info.Summary),
+		TotalCount:  totalCount,
+		PublishDate: strings.TrimSpace(info.PublishDate),
+		Cover:       normalizeMiguImageURL(pickMiguImage(info.ImgItem)),
+	}, nil
+}
+
+// fetchAlbumSongs 获取专辑全部歌曲；数字专辑 ID 本身查不到歌曲时，改用其对应的普通专辑 ID 重查。
 func (m *Migu) fetchAlbumSongs(id string) ([]model.Song, int, error) {
 	albumID := strings.TrimSpace(id)
 	if albumID == "" {
 		return nil, 0, errors.New("album id is empty")
 	}
 
+	songs, totalCount, err := m.fetchAlbumSongPages(albumID)
+	if err == nil && len(songs) > 0 {
+		return songs, totalCount, nil
+	}
+
+	digital, digitalErr := m.fetchDigitalAlbumInfo(albumID)
+	if digitalErr != nil || digital.MaterialID == "" || digital.MaterialID == albumID {
+		if err != nil {
+			return nil, totalCount, err
+		}
+		return nil, totalCount, errors.New("album has no playable songs")
+	}
+	return m.fetchAlbumSongPages(digital.MaterialID)
+}
+
+func (m *Migu) fetchAlbumSongPages(albumID string) ([]model.Song, int, error) {
 	const pageSize = 50
 
 	seen := make(map[string]struct{})
@@ -251,7 +432,7 @@ func (m *Migu) fetchAlbumSongs(id string) ([]model.Song, int, error) {
 		params.Set("pageNo", strconv.Itoa(pageNo))
 		params.Set("pageSize", strconv.Itoa(pageSize))
 
-		apiURL := "https://app.c.nf.migu.cn/MIGUM2.0/v1.0/content/queryAlbumSong?" + params.Encode()
+		apiURL := miguAlbumSongAPI + "?" + params.Encode()
 		body, err := utils.Get(apiURL,
 			utils.WithHeader("User-Agent", UserAgent),
 			utils.WithHeader("Referer", Referer),

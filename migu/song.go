@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
-	"net/url"
 	"regexp"
 )
 
@@ -16,41 +14,36 @@ func Parse(link string) (*model.Song, error) { return defaultMigu.Parse(link) }
 
 // Search 搜索歌曲
 func (m *Migu) Search(keyword string) ([]model.Song, error) {
-	params := url.Values{}
-	params.Set("ua", "Android_migu")
-	params.Set("version", "5.0.1")
-	params.Set("text", keyword)
-	params.Set("pageNo", "1")
-	params.Set("pageSize", "10")
-	params.Set("searchSwitch", `{"song":1,"album":0,"singer":0,"tagSong":0,"mvSong":0,"songlist":0,"bestShow":1}`)
+	const searchSwitch = `{"song":1,"album":0,"singer":0,"tagSong":0,"mvSong":0,"songlist":0,"bestShow":1}`
 
-	apiURL := "http://pd.musicapp.migu.cn/MIGUM2.0/v1.0/content/search_all.do?" + params.Encode()
+	seen := make(map[string]struct{})
+	songs := make([]model.Song, 0, miguSearchPageSize)
 
-	body, err := utils.Get(apiURL,
-		utils.WithHeader("User-Agent", UserAgent),
-		utils.WithHeader("Referer", Referer),
-		utils.WithHeader("Cookie", m.cookie),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp struct {
-		SongResultData struct {
-			Result []MiguSongItem `json:"result"`
-		} `json:"songResultData"`
-	}
-
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("migu json parse error: %w", err)
-	}
-
-	var songs []model.Song
-	for _, item := range resp.SongResultData.Result {
-		song := m.convertItemToSong(item)
-		if song != nil {
+	err := m.searchPages(keyword, searchSwitch, func(body []byte) (int, int, error) {
+		var resp struct {
+			SongResultData struct {
+				TotalCount json.Number    `json:"totalCount"`
+				Result     []MiguSongItem `json:"result"`
+			} `json:"songResultData"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return 0, 0, fmt.Errorf("migu json parse error: %w", err)
+		}
+		for _, item := range resp.SongResultData.Result {
+			song := m.convertItemToSong(item)
+			if song == nil {
+				continue
+			}
+			if _, ok := seen[song.ID]; ok {
+				continue
+			}
+			seen[song.ID] = struct{}{}
 			songs = append(songs, *song)
 		}
+		return len(resp.SongResultData.Result), miguTotalCount(resp.SongResultData.TotalCount), nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return songs, nil
 }

@@ -103,8 +103,30 @@ var miguPlaylistCategoryKeywords = []struct {
 	{Name: "睡前", Group: "场景"},
 }
 
+const miguPlaylistSearchSwitch = `{"song":0,"album":0,"singer":0,"tagSong":0,"mvSong":0,"songlist":1,"bestShow":1}`
+
 func (m *Migu) SearchPlaylist(keyword string) ([]model.Playlist, error) {
-	return m.searchPlaylists(keyword, 1, 10)
+	seen := make(map[string]struct{})
+	playlists := make([]model.Playlist, 0, miguSearchPageSize)
+
+	err := m.searchPages(keyword, miguPlaylistSearchSwitch, func(body []byte) (int, int, error) {
+		items, total, err := parseMiguPlaylistSearch(body)
+		if err != nil {
+			return 0, 0, err
+		}
+		for _, playlist := range items {
+			if _, ok := seen[playlist.ID]; ok {
+				continue
+			}
+			seen[playlist.ID] = struct{}{}
+			playlists = append(playlists, playlist)
+		}
+		return len(items), total, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return playlists, nil
 }
 
 func (m *Migu) searchPlaylists(keyword string, page, limit int) ([]model.Playlist, error) {
@@ -114,12 +136,9 @@ func (m *Migu) searchPlaylists(keyword string, page, limit int) ([]model.Playlis
 	params.Set("text", keyword)
 	params.Set("pageNo", strconv.Itoa(page))
 	params.Set("pageSize", strconv.Itoa(limit))
-	// 切换开关：songlist:1
-	params.Set("searchSwitch", `{"song":0,"album":0,"singer":0,"tagSong":0,"mvSong":0,"songlist":1,"bestShow":1}`)
+	params.Set("searchSwitch", miguPlaylistSearchSwitch)
 
-	apiURL := "http://pd.musicapp.migu.cn/MIGUM2.0/v1.0/content/search_all.do?" + params.Encode()
-
-	body, err := utils.Get(apiURL,
+	body, err := utils.Get(miguSearchAPI+"?"+params.Encode(),
 		utils.WithHeader("User-Agent", UserAgent),
 		utils.WithHeader("Referer", Referer),
 		utils.WithHeader("Cookie", m.cookie),
@@ -127,10 +146,16 @@ func (m *Migu) searchPlaylists(keyword string, page, limit int) ([]model.Playlis
 	if err != nil {
 		return nil, err
 	}
+	playlists, _, err := parseMiguPlaylistSearch(body)
+	return playlists, err
+}
 
+// parseMiguPlaylistSearch 解析歌单搜索单页响应，返回歌单列表与接口总数。
+func parseMiguPlaylistSearch(body []byte) ([]model.Playlist, int, error) {
 	var resp struct {
 		SongListResultData struct {
-			Result []struct {
+			TotalCount json.Number `json:"totalCount"`
+			Result     []struct {
 				ID              string          `json:"id"`
 				Name            string          `json:"name"`
 				MusicNum        string          `json:"musicNum"`
@@ -145,10 +170,10 @@ func (m *Migu) searchPlaylists(keyword string, page, limit int) ([]model.Playlis
 	}
 
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("migu playlist json parse error: %w", err)
+		return nil, 0, fmt.Errorf("migu playlist json parse error: %w", err)
 	}
 
-	var playlists []model.Playlist
+	playlists := make([]model.Playlist, 0, len(resp.SongListResultData.Result))
 	for _, item := range resp.SongListResultData.Result {
 		playlistID := strings.TrimSpace(item.ID)
 		name := strings.TrimSpace(item.Name)
@@ -175,7 +200,7 @@ func (m *Migu) searchPlaylists(keyword string, page, limit int) ([]model.Playlis
 			},
 		})
 	}
-	return playlists, nil
+	return playlists, miguTotalCount(resp.SongListResultData.TotalCount), nil
 }
 
 func (m *Migu) GetPlaylistSongs(id string) ([]model.Song, error) {
