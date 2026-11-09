@@ -130,19 +130,7 @@ func (m *Migu) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 }
 
 func (m *Migu) searchPlaylists(keyword string, page, limit int) ([]model.Playlist, error) {
-	params := url.Values{}
-	params.Set("ua", "Android_migu")
-	params.Set("version", "5.0.1")
-	params.Set("text", keyword)
-	params.Set("pageNo", strconv.Itoa(page))
-	params.Set("pageSize", strconv.Itoa(limit))
-	params.Set("searchSwitch", miguPlaylistSearchSwitch)
-
-	body, err := utils.Get(miguSearchAPI+"?"+params.Encode(),
-		utils.WithHeader("User-Agent", UserAgent),
-		utils.WithHeader("Referer", Referer),
-		utils.WithHeader("Cookie", m.cookie),
-	)
+	body, err := m.searchRequestSized(keyword, miguPlaylistSearchSwitch, page, limit)
 	if err != nil {
 		return nil, err
 	}

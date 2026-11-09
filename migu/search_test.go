@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"sync"
 	"testing"
 )
 
@@ -17,19 +18,28 @@ func albumSearchPage(pageNo int) []byte {
 	}
 	start := (pageNo - 1) * miguSearchPageSize
 	items := make([]item, 0, miguSearchPageSize)
-	for i := start; i < start+miguSearchPageSize && i < 41; i++ {
+	for i := start; i < start+miguSearchPageSize && i < 250; i++ {
 		items = append(items, item{ID: strconv.Itoa(1000 + i), ResourceType: "2003", Name: fmt.Sprintf("album %d", i)})
 	}
 	body, _ := json.Marshal(map[string]any{
-		"albumResultData": map[string]any{"totalCount": "41", "result": items},
+		"albumResultData": map[string]any{"totalCount": "250", "result": items},
 	})
 	return body
 }
 
 func TestSearchAlbumFollowsPages(t *testing.T) {
 	requests := 0
+	var mu sync.Mutex
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		requests++
+		mu.Unlock()
+		if r.Header.Get("sign") == "" || r.Header.Get("deviceId") == "" || r.Header.Get("timestamp") == "" {
+			t.Errorf("missing signature headers: %v", r.Header)
+		}
+		if r.URL.Query().Get("pageSize") != "100" {
+			t.Errorf("pageSize = %q, want 100", r.URL.Query().Get("pageSize"))
+		}
 		pageNo, _ := strconv.Atoi(r.URL.Query().Get("pageNo"))
 		w.Write(albumSearchPage(pageNo))
 	}))
@@ -43,13 +53,13 @@ func TestSearchAlbumFollowsPages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SearchAlbum error: %v", err)
 	}
-	if len(albums) != 41 {
-		t.Fatalf("expected 41 albums, got %d", len(albums))
+	if len(albums) != 250 {
+		t.Fatalf("expected 250 albums, got %d", len(albums))
 	}
 	if requests != 3 {
 		t.Fatalf("expected 3 page requests, got %d", requests)
 	}
-	if albums[20].ID != "1020" {
+	if albums[100].ID != "1100" || albums[249].ID != "1249" {
 		t.Fatalf("unexpected album order: %s", albums[20].ID)
 	}
 }
@@ -104,8 +114,11 @@ func TestFetchAlbumSongsFallsBackToDigitalAlbum(t *testing.T) {
 
 func TestSearchFollowsPagesAndStopsAtCap(t *testing.T) {
 	requests := 0
+	var mu sync.Mutex
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		requests++
+		mu.Unlock()
 		pageNo, _ := strconv.Atoi(r.URL.Query().Get("pageNo"))
 		items := make([]map[string]any, 0, miguSearchPageSize)
 		for i := 0; i < miguSearchPageSize; i++ {

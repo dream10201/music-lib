@@ -1,15 +1,20 @@
 package migu
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
+
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
 )
 
 const (
@@ -23,46 +28,55 @@ type Migu struct {
 }
 
 var (
-	miguSearchAPI       = "http://pd.musicapp.migu.cn/MIGUM2.0/v1.0/content/search_all.do"
+	miguSearchAPI       = "https://jadeite.migu.cn/music_search/v3/search/searchAll"
 	miguResourceInfoAPI = "https://app.c.nf.migu.cn/MIGUM2.0/v1.0/content/resourceinfo.do"
 	miguAlbumSongAPI    = "https://app.c.nf.migu.cn/MIGUM2.0/v1.0/content/queryAlbumSong"
 )
 
 const (
-	// miguSearchPageSize 搜索接口固定每页 20 条，pageSize 参数不生效。
-	miguSearchPageSize = 20
+	// miguSearchPageSize 客户端搜索接口单页上限为 100。
+	miguSearchPageSize = 100
 	// miguSearchMaxPages 搜索最多翻页数，用于限制单次搜索的请求次数。
-	miguSearchMaxPages = 5
+	miguSearchMaxPages = 3
+
+	miguSearchUIVersion = "A_music_3.6.1"
+	miguSearchDeviceID  = "963B7AA0D21511ED807EE5846EC87D20"
+	miguSearchSignSalt  = "6cdc72a439cef99a3418d2a78aa28c73yyapp2d16148780a1dcc7408e06336b98cfd50"
+	miguSearchUserAgent = "okhttp/4.9.1"
 )
 
-// searchPages 逐页请求搜索接口，直到本页不满、累计条数达到总数或翻满 miguSearchMaxPages。
-// parse 处理单页响应，返回本页原始条数与接口给出的总数。
+// searchPages 先请求第一页取得总数，再并发拉取剩余页（最多 miguSearchMaxPages 页），按页序交给 parse。
 func (m *Migu) searchPages(keyword, searchSwitch string, parse func(body []byte) (pageCount int, total int, err error)) error {
-	collected := 0
-	totalCount := 0
-	for pageNo := 1; pageNo <= miguSearchMaxPages; pageNo++ {
-		body, err := m.searchRequest(keyword, searchSwitch, pageNo)
-		if err != nil {
-			if pageNo == 1 {
-				return err
-			}
+	body, err := m.searchRequest(keyword, searchSwitch, 1)
+	if err != nil {
+		return err
+	}
+	pageCount, total, err := parse(body)
+	if err != nil {
+		return err
+	}
+	if pageCount < miguSearchPageSize || total <= pageCount {
+		return nil
+	}
+	pages := (total + miguSearchPageSize - 1) / miguSearchPageSize
+	if pages > miguSearchMaxPages {
+		pages = miguSearchMaxPages
+	}
+	bodies := make([][]byte, pages+1)
+	var wg sync.WaitGroup
+	for pageNo := 2; pageNo <= pages; pageNo++ {
+		wg.Add(1)
+		go func(pageNo int) {
+			defer wg.Done()
+			bodies[pageNo], _ = m.searchRequest(keyword, searchSwitch, pageNo)
+		}(pageNo)
+	}
+	wg.Wait()
+	for pageNo := 2; pageNo <= pages; pageNo++ {
+		if bodies[pageNo] == nil {
 			return nil
 		}
-		pageCount, total, err := parse(body)
-		if err != nil {
-			if pageNo == 1 {
-				return err
-			}
-			return nil
-		}
-		if totalCount == 0 {
-			totalCount = total
-		}
-		collected += pageCount
-		if pageCount < miguSearchPageSize {
-			return nil
-		}
-		if totalCount > 0 && collected >= totalCount {
+		if _, _, err := parse(bodies[pageNo]); err != nil {
 			return nil
 		}
 	}
@@ -75,17 +89,32 @@ func miguTotalCount(n json.Number) int {
 }
 
 func (m *Migu) searchRequest(keyword, searchSwitch string, pageNo int) ([]byte, error) {
+	return m.searchRequestSized(keyword, searchSwitch, pageNo, miguSearchPageSize)
+}
+
+func (m *Migu) searchRequestSized(keyword, searchSwitch string, pageNo, pageSize int) ([]byte, error) {
+	if pageSize < 1 || pageSize > miguSearchPageSize {
+		pageSize = miguSearchPageSize
+	}
 	params := url.Values{}
-	params.Set("ua", "Android_migu")
-	params.Set("version", "5.0.1")
+	params.Set("isCorrect", "1")
+	params.Set("isCopyright", "1")
+	params.Set("searchSwitch", searchSwitch)
 	params.Set("text", keyword)
 	params.Set("pageNo", strconv.Itoa(pageNo))
-	params.Set("pageSize", strconv.Itoa(miguSearchPageSize))
-	params.Set("searchSwitch", searchSwitch)
+	params.Set("pageSize", strconv.Itoa(pageSize))
+	params.Set("sort", "1")
+	params.Set("sid", "USS")
+
+	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	sum := md5.Sum([]byte(keyword + miguSearchSignSalt + miguSearchDeviceID + timestamp))
 
 	return utils.Get(miguSearchAPI+"?"+params.Encode(),
-		utils.WithHeader("User-Agent", UserAgent),
-		utils.WithHeader("Referer", Referer),
+		utils.WithHeader("User-Agent", miguSearchUserAgent),
+		utils.WithHeader("uiVersion", miguSearchUIVersion),
+		utils.WithHeader("deviceId", miguSearchDeviceID),
+		utils.WithHeader("timestamp", timestamp),
+		utils.WithHeader("sign", hex.EncodeToString(sum[:])),
 		utils.WithHeader("Cookie", m.cookie),
 	)
 }
