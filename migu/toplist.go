@@ -13,10 +13,8 @@ import (
 )
 
 const (
-	// TopListAPI 咪咕排行榜目录接口（移动端 v2.0，含特色榜/尖叫榜/精选榜单）。
-	TopListAPI = "https://app.u.nf.migu.cn/bmw/rank/rank-index/v2.0"
-	// TopListFallbackAPI 咪咕 PC 端排行榜目录接口，作为 v2.0 失败时的兜底。
-	TopListFallbackAPI = "https://app.c.nf.migu.cn/pc/bmw/rank/rank-index/v1.0"
+	// TopListAPI 咪咕排行榜目录接口（客户端 v2.0，含特色榜/尖叫榜/精选榜单）。
+	TopListAPI = "https://app.c.nf.migu.cn/bmw/rank/rank-index/v2.0"
 	// TopListSongsAPI 咪咕榜单歌曲接口，每页固定返回 50 首，无需登录。
 	TopListSongsAPI = "https://app.c.nf.migu.cn/bmw/rank/rank-info/v1.0"
 	// HotSongTopListID 咪咕「全网热歌榜」ID，作为「热门单曲」来源。
@@ -44,13 +42,12 @@ func GetHotSongs(limit int) ([]model.Song, error) {
 }
 
 // miguTopListIndexAPIs 榜单目录接口，按顺序尝试，前一个失败时回退到下一个。
-var miguTopListIndexAPIs = []string{TopListAPI, TopListFallbackAPI}
+var miguTopListIndexAPIs = []string{TopListAPI}
 
 // miguTopListSongsAPI 榜单歌曲接口，测试时可替换为本地服务地址。
 var miguTopListSongsAPI = TopListSongsAPI
 
 // GetTopLists 获取咪咕排行榜目录（无需登录）。
-// 优先使用移动端 v2.0 目录（含「精选榜单」），失败时回退到 PC 端目录。
 func (m *Migu) GetTopLists() ([]model.TopList, error) {
 	errs := make([]string, 0, len(miguTopListIndexAPIs))
 	for _, apiURL := range miguTopListIndexAPIs {

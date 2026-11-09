@@ -30,7 +30,7 @@ type Migu struct {
 var (
 	miguSearchAPI       = "https://jadeite.migu.cn/music_search/v3/search/searchAll"
 	miguResourceInfoAPI = "https://app.c.nf.migu.cn/MIGUM2.0/v1.0/content/resourceinfo.do"
-	miguAlbumSongAPI    = "https://app.c.nf.migu.cn/MIGUM2.0/v1.0/content/queryAlbumSong"
+	miguAlbumSongAPI    = "https://app.c.nf.migu.cn/MIGUM3.0/resource/album/song/v2.0"
 )
 
 const (
@@ -476,7 +476,7 @@ func (m *Migu) fetchAlbumSongPages(albumID string) ([]model.Song, int, error) {
 			Info string `json:"info"`
 			Data struct {
 				SongList   []MiguSongItem `json:"songList"`
-				TotalCount int            `json:"totalCount"`
+				TotalCount json.Number    `json:"totalCount"`
 			} `json:"data"`
 		}
 
@@ -488,7 +488,7 @@ func (m *Migu) fetchAlbumSongPages(albumID string) ([]model.Song, int, error) {
 		}
 
 		if totalCount == 0 {
-			totalCount = resp.Data.TotalCount
+			totalCount = miguTotalCount(resp.Data.TotalCount)
 		}
 		if len(resp.Data.SongList) == 0 {
 			break
@@ -620,7 +620,7 @@ func (m *Migu) fetchSongDetail(contentID string) (*model.Song, error) {
 	params.Set("resourceType", "2")
 	params.Set("resourceId", contentID)
 
-	apiURL := "http://c.musicapp.migu.cn/MIGUM2.0/v1.0/content/resourceinfo.do?" + params.Encode()
+	apiURL := miguResourceInfoAPI + "?" + params.Encode()
 	body, err := utils.Get(apiURL,
 		utils.WithHeader("User-Agent", UserAgent),
 		utils.WithHeader("Referer", Referer),

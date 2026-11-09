@@ -35,7 +35,7 @@ func (m *Migu) GetLyrics(s *model.Song) (string, error) {
 	params.Set("resourceId", contentID)
 	params.Set("resourceType", "2")
 
-	apiURL := "http://c.musicapp.migu.cn/MIGUM2.0/v1.0/content/resourceinfo.do?" + params.Encode()
+	apiURL := miguResourceInfoAPI + "?" + params.Encode()
 
 	body, err := utils.Get(apiURL,
 		utils.WithHeader("User-Agent", UserAgent),

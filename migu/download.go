@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	miguListenURL      = "https://c.musicapp.migu.cn/MIGUM2.0/v2.1/content/listen-url"
+	miguListenURL      = "https://app.c.nf.migu.cn/MIGUM2.0/v2.1/content/listen-url"
 	miguAndroidAppKey  = "308202333082019c"
 	miguAndroidUA      = "Android_migu/7.41.13 okhttp/3.12.13"
 	miguAndroidChannel = "0146832"
