@@ -31,6 +31,7 @@ var (
 	miguSearchAPI       = "https://jadeite.migu.cn/music_search/v3/search/searchAll"
 	miguResourceInfoAPI = "https://app.c.nf.migu.cn/MIGUM2.0/v1.0/content/resourceinfo.do"
 	miguAlbumSongAPI    = "https://app.c.nf.migu.cn/MIGUM3.0/resource/album/song/v2.0"
+	miguPlaylistSongAPI = "https://app.c.nf.migu.cn/MIGUM3.0/resource/playlist/song/v2.0"
 )
 
 const (
@@ -121,6 +122,118 @@ func (m *Migu) searchRequestSized(keyword, searchSwitch string, pageNo, pageSize
 
 func New(cookie string) *Migu { return &Migu{cookie: cookie} }
 
+// miguAppRequestOptions 客户端接口通用请求头。
+func miguAppRequestOptions(cookie string) []utils.RequestOption {
+	opts := []utils.RequestOption{
+		utils.WithHeader("User-Agent", miguAndroidUA),
+		utils.WithHeader("channel", miguAndroidChannel),
+		utils.WithHeader("version", miguAndroidVersion),
+	}
+	if strings.TrimSpace(cookie) != "" {
+		opts = append(opts, utils.WithHeader("Cookie", cookie))
+	}
+	return opts
+}
+
+const (
+	// miguSongPageSize 歌单/专辑歌曲接口单页上限为 50。
+	miguSongPageSize = 50
+	// miguSongMaxPages 歌单/专辑歌曲最多翻页数。
+	miguSongMaxPages = 40
+	// miguSongPageConcurrency 并发拉取歌曲分页的协程数。
+	miguSongPageConcurrency = 4
+)
+
+type miguSongPage struct {
+	items []MiguSongItem
+	total int
+}
+
+// fetchSongPages 先取第一页得到总数，再并发拉取剩余页，按页序去重合并。
+func (m *Migu) fetchSongPages(fetch func(pageNo int) (miguSongPage, error), convert func(MiguSongItem) *model.Song) ([]model.Song, int, error) {
+	first, err := fetch(1)
+	if err != nil {
+		return nil, 0, err
+	}
+	pages := []miguSongPage{first}
+	if len(first.items) >= miguSongPageSize && first.total > len(first.items) {
+		pageCount := (first.total + miguSongPageSize - 1) / miguSongPageSize
+		if pageCount > miguSongMaxPages {
+			pageCount = miguSongMaxPages
+		}
+		rest := make([]miguSongPage, pageCount+1)
+		failed := make([]bool, pageCount+1)
+		sem := make(chan struct{}, miguSongPageConcurrency)
+		var wg sync.WaitGroup
+		for pageNo := 2; pageNo <= pageCount; pageNo++ {
+			wg.Add(1)
+			go func(pageNo int) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				page, err := fetch(pageNo)
+				if err != nil {
+					failed[pageNo] = true
+					return
+				}
+				rest[pageNo] = page
+			}(pageNo)
+		}
+		wg.Wait()
+		for pageNo := 2; pageNo <= pageCount; pageNo++ {
+			if failed[pageNo] || len(rest[pageNo].items) == 0 {
+				break
+			}
+			pages = append(pages, rest[pageNo])
+		}
+	}
+
+	seen := make(map[string]struct{})
+	songs := make([]model.Song, 0, len(first.items))
+	for _, page := range pages {
+		for _, item := range page.items {
+			song := convert(item)
+			if song == nil {
+				continue
+			}
+			key := firstNonEmpty(song.Extra["content_id"], item.ContentID, song.ID, item.CopyrightID)
+			if key == "" {
+				key = song.Name + "|" + song.Artist
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			songs = append(songs, *song)
+		}
+	}
+	return songs, first.total, nil
+}
+
+func (m *Migu) fetchSongPage(apiURL string, params url.Values, pageNo int, label string) (miguSongPage, error) {
+	params.Set("pageNo", strconv.Itoa(pageNo))
+	params.Set("pageSize", strconv.Itoa(miguSongPageSize))
+	body, err := utils.Get(apiURL+"?"+params.Encode(), miguAppRequestOptions(m.cookie)...)
+	if err != nil {
+		return miguSongPage{}, err
+	}
+	var resp struct {
+		Code string `json:"code"`
+		Info string `json:"info"`
+		Data struct {
+			SongList   []MiguSongItem `json:"songList"`
+			TotalCount json.Number    `json:"totalCount"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return miguSongPage{}, fmt.Errorf("migu %s json parse error: %w", label, err)
+	}
+	if resp.Code != "" && resp.Code != "000000" {
+		return miguSongPage{}, fmt.Errorf("migu api error: %s (code %s)", resp.Info, resp.Code)
+	}
+	return miguSongPage{items: resp.Data.SongList, total: miguTotalCount(resp.Data.TotalCount)}, nil
+}
+
 var defaultMigu = New("")
 
 func (m *Migu) fetchPlaylistInfo(id string) (*model.Playlist, error) {
@@ -136,9 +249,7 @@ func (m *Migu) fetchPlaylistInfo(id string) (*model.Playlist, error) {
 
 	apiURL := miguResourceInfoAPI + "?" + params.Encode()
 	body, err := utils.Get(apiURL,
-		utils.WithHeader("User-Agent", UserAgent),
-		utils.WithHeader("Referer", Referer),
-		utils.WithHeader("Cookie", m.cookie),
+		miguAppRequestOptions(m.cookie)...,
 	)
 	if err != nil {
 		return nil, err
@@ -275,9 +386,7 @@ func (m *Migu) fetchAlbumInfo(albumID string) (*model.Playlist, error) {
 
 	apiURL := miguResourceInfoAPI + "?" + params.Encode()
 	body, err := utils.Get(apiURL,
-		utils.WithHeader("User-Agent", UserAgent),
-		utils.WithHeader("Referer", Referer),
-		utils.WithHeader("Cookie", m.cookie),
+		miguAppRequestOptions(m.cookie)...,
 	)
 	if err != nil {
 		return nil, err
@@ -382,9 +491,7 @@ func (m *Migu) fetchDigitalAlbumInfo(albumID string) (*miguDigitalAlbumInfo, err
 	params.Set("resourceId", albumID)
 
 	body, err := utils.Get(miguResourceInfoAPI+"?"+params.Encode(),
-		utils.WithHeader("User-Agent", UserAgent),
-		utils.WithHeader("Referer", Referer),
-		utils.WithHeader("Cookie", m.cookie),
+		miguAppRequestOptions(m.cookie)...,
 	)
 	if err != nil {
 		return nil, err
@@ -449,85 +556,18 @@ func (m *Migu) fetchAlbumSongs(id string) ([]model.Song, int, error) {
 }
 
 func (m *Migu) fetchAlbumSongPages(albumID string) ([]model.Song, int, error) {
-	const pageSize = 50
-
-	seen := make(map[string]struct{})
-	songs := make([]model.Song, 0, pageSize)
-	totalCount := 0
-
-	for pageNo := 1; ; pageNo++ {
+	songs, total, err := m.fetchSongPages(func(pageNo int) (miguSongPage, error) {
 		params := url.Values{}
 		params.Set("albumId", albumID)
-		params.Set("pageNo", strconv.Itoa(pageNo))
-		params.Set("pageSize", strconv.Itoa(pageSize))
-
-		apiURL := miguAlbumSongAPI + "?" + params.Encode()
-		body, err := utils.Get(apiURL,
-			utils.WithHeader("User-Agent", UserAgent),
-			utils.WithHeader("Referer", Referer),
-			utils.WithHeader("Cookie", m.cookie),
-		)
-		if err != nil {
-			return nil, 0, err
-		}
-
-		var resp struct {
-			Code string `json:"code"`
-			Info string `json:"info"`
-			Data struct {
-				SongList   []MiguSongItem `json:"songList"`
-				TotalCount json.Number    `json:"totalCount"`
-			} `json:"data"`
-		}
-
-		if err := json.Unmarshal(body, &resp); err != nil {
-			return nil, 0, fmt.Errorf("migu album songs json parse error: %w", err)
-		}
-		if resp.Code != "" && resp.Code != "000000" {
-			return nil, 0, fmt.Errorf("migu api error: %s (code %s)", resp.Info, resp.Code)
-		}
-
-		if totalCount == 0 {
-			totalCount = miguTotalCount(resp.Data.TotalCount)
-		}
-		if len(resp.Data.SongList) == 0 {
-			break
-		}
-
-		before := len(songs)
-		for _, item := range resp.Data.SongList {
-			song := m.convertItemToSong(item)
-			if song == nil {
-				continue
-			}
-
-			key := firstNonEmpty(song.Extra["content_id"], item.ContentID, song.ID, item.CopyrightID)
-			if key == "" {
-				key = song.Name + "|" + song.Artist
-			}
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			songs = append(songs, *song)
-		}
-
-		if len(resp.Data.SongList) < pageSize {
-			break
-		}
-		if totalCount > 0 && len(songs) >= totalCount {
-			break
-		}
-		if len(songs) == before {
-			break
-		}
+		return m.fetchSongPage(miguAlbumSongAPI, params, pageNo, "album songs")
+	}, m.convertItemToSong)
+	if err != nil {
+		return nil, 0, err
 	}
-
 	if len(songs) == 0 {
-		return nil, totalCount, errors.New("album has no playable songs")
+		return nil, total, errors.New("album has no playable songs")
 	}
-
-	return songs, totalCount, nil
+	return songs, total, nil
 }
 
 // 内部结构体定义，用于 Search 和 Parse 复用
@@ -622,9 +662,7 @@ func (m *Migu) fetchSongDetail(contentID string) (*model.Song, error) {
 
 	apiURL := miguResourceInfoAPI + "?" + params.Encode()
 	body, err := utils.Get(apiURL,
-		utils.WithHeader("User-Agent", UserAgent),
-		utils.WithHeader("Referer", Referer),
-		utils.WithHeader("Cookie", m.cookie),
+		miguAppRequestOptions(m.cookie)...,
 	)
 	if err != nil {
 		return nil, err

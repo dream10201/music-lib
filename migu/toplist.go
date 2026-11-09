@@ -85,14 +85,7 @@ func (m *Migu) fetchTopLists(apiURL string) ([]model.TopList, error) {
 }
 
 func miguTopListRequestOptions(cookie string) []utils.RequestOption {
-	opts := []utils.RequestOption{
-		utils.WithHeader("User-Agent", UserAgent),
-		utils.WithHeader("Referer", Referer),
-	}
-	if strings.TrimSpace(cookie) != "" {
-		opts = append(opts, utils.WithHeader("Cookie", cookie))
-	}
-	return opts
+	return miguAppRequestOptions(cookie)
 }
 
 type miguRankGroup struct {

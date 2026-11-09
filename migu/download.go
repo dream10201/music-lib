@@ -220,7 +220,6 @@ func (m *Migu) fetchListenInfo(contentID, copyrightID, songID, albumID, resource
 	req.Header.Set("User-Agent", miguAndroidUA)
 	req.Header.Set("channel", miguAndroidChannel)
 	req.Header.Set("version", miguAndroidVersion)
-	req.Header.Set("Referer", "https://music.migu.cn/")
 	if cookie := strings.TrimSpace(m.cookie); cookie != "" {
 		req.Header.Set("Cookie", cookie)
 	}
@@ -359,7 +358,6 @@ func (m *Migu) downloadInfoValid(info *DownloadInfo) bool {
 		return false
 	}
 	req.Header.Set("User-Agent", miguAndroidUA)
-	req.Header.Set("Referer", "https://music.migu.cn/")
 	req.Header.Set("Range", "bytes=0-63")
 	if cookie := strings.TrimSpace(m.cookie); cookie != "" {
 		req.Header.Set("Cookie", cookie)

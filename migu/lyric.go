@@ -38,9 +38,7 @@ func (m *Migu) GetLyrics(s *model.Song) (string, error) {
 	apiURL := miguResourceInfoAPI + "?" + params.Encode()
 
 	body, err := utils.Get(apiURL,
-		utils.WithHeader("User-Agent", UserAgent),
-		utils.WithHeader("Referer", Referer),
-		utils.WithHeader("Cookie", m.cookie),
+		miguAppRequestOptions(m.cookie)...,
 	)
 	if err != nil {
 		return "", err
@@ -72,11 +70,7 @@ func (m *Migu) GetLyrics(s *model.Song) (string, error) {
 
 	lyricUrl = strings.Replace(lyricUrl, "http://", "https://", 1)
 
-	lrcBody, err := utils.Get(lyricUrl,
-		utils.WithHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"),
-		utils.WithHeader("Referer", "https://y.migu.cn/"),
-		utils.WithHeader("Cookie", m.cookie),
-	)
+	lrcBody, err := utils.Get(lyricUrl, miguAppRequestOptions(m.cookie)...)
 	if err != nil {
 		return "", fmt.Errorf("download lyric failed: %w", err)
 	}

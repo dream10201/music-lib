@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 )
 
 func SearchPlaylist(keyword string) ([]model.Playlist, error) {
@@ -196,83 +195,17 @@ func (m *Migu) GetPlaylistSongs(id string) ([]model.Song, error) {
 	if playlistID == "" {
 		return nil, errors.New("playlist id is empty")
 	}
-
-	const pageSize = 50
-	seen := make(map[string]struct{})
-	songs := make([]model.Song, 0, pageSize)
-	totalCount := 0
-
-	for pageNo := 1; ; pageNo++ {
+	songs, _, err := m.fetchSongPages(func(pageNo int) (miguSongPage, error) {
 		params := url.Values{}
-		params.Set("pageNo", strconv.Itoa(pageNo))
-		params.Set("pageSize", strconv.Itoa(pageSize))
 		params.Set("playlistId", playlistID)
-
-		apiURL := "https://app.c.nf.migu.cn/MIGUM3.0/resource/playlist/song/v2.0?" + params.Encode()
-		body, err := utils.Get(apiURL,
-			utils.WithHeader("User-Agent", UserAgent),
-			utils.WithHeader("Referer", Referer),
-			utils.WithHeader("Cookie", m.cookie),
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		var resp struct {
-			Code string `json:"code"`
-			Info string `json:"info"`
-			Data struct {
-				SongList   []MiguSongItem `json:"songList"`
-				TotalCount int            `json:"totalCount"`
-			} `json:"data"`
-		}
-
-		if err := json.Unmarshal(body, &resp); err != nil {
-			return nil, fmt.Errorf("migu playlist json parse error: %w", err)
-		}
-		if resp.Code != "" && resp.Code != "000000" {
-			return nil, fmt.Errorf("migu api error: %s (code %s)", resp.Info, resp.Code)
-		}
-		if totalCount == 0 {
-			totalCount = resp.Data.TotalCount
-		}
-		if len(resp.Data.SongList) == 0 {
-			break
-		}
-
-		before := len(songs)
-		for _, item := range resp.Data.SongList {
-			song := m.convertItemToSongAllowPaid(item)
-			if song == nil {
-				continue
-			}
-
-			key := firstNonEmpty(song.Extra["content_id"], item.ContentID, song.ID, item.CopyrightID)
-			if key == "" {
-				key = song.Name + "|" + song.Artist
-			}
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			songs = append(songs, *song)
-		}
-
-		if len(resp.Data.SongList) < pageSize {
-			break
-		}
-		if totalCount > 0 && len(songs) >= totalCount {
-			break
-		}
-		if len(songs) == before {
-			break
-		}
+		return m.fetchSongPage(miguPlaylistSongAPI, params, pageNo, "playlist")
+	}, m.convertItemToSongAllowPaid)
+	if err != nil {
+		return nil, err
 	}
-
 	if len(songs) == 0 {
 		return nil, errors.New("playlist has no playable songs")
 	}
-
 	return songs, nil
 }
 
