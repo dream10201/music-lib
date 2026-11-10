@@ -25,6 +25,7 @@ const (
 
 type Migu struct {
 	cookie string
+	uid    string
 }
 
 var (
@@ -121,6 +122,13 @@ func (m *Migu) searchRequestSized(keyword, searchSwitch string, pageNo, pageSize
 }
 
 func New(cookie string) *Migu { return &Migu{cookie: cookie} }
+
+// WithUID 设置咪咕账号用户ID。取流接口按 uid 请求头判定会员权益，
+// uid 稳定且不过期，无需刷新，优于会过期的网页 Cookie。
+func (m *Migu) WithUID(uid string) *Migu {
+	m.uid = strings.TrimSpace(uid)
+	return m
+}
 
 // miguAppRequestOptions 客户端接口通用请求头。
 func miguAppRequestOptions(cookie string) []utils.RequestOption {

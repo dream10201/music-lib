@@ -64,6 +64,17 @@ var miguEncryptedAppCode = []byte{
 // no stream for the song; repeating the request cannot change the outcome.
 var ErrUnavailable = errors.New("migu song unavailable")
 
+// ErrAuthRequired reports that Migu rejected the request because no valid
+// account credential (uid) was presented. Unlike ErrUnavailable this is not
+// per-song: it means the configured credential is missing or invalid, so the
+// caller should stop downloading until it is fixed rather than skip the song.
+var ErrAuthRequired = errors.New("migu login required")
+
+// miguAuthCannotCode marks responses whose entitlement check failed for lack of
+// a valid login credential ("会员专属歌曲，请先登录"), as opposed to the account
+// simply not being a member of the required tier.
+const miguAuthCannotCode = "440006"
+
 // DownloadInfo describes a Migu audio stream. Z3D streams require
 // DecryptAudio with FileKey before they can be played or saved as audio.
 type DownloadInfo struct {
@@ -142,6 +153,11 @@ func (m *Migu) GetDownloadInfo(song *model.Song) (*DownloadInfo, error) {
 	}
 	if len(candidates) == 0 {
 		for _, resp := range responses {
+			if resp != nil && strings.TrimSpace(resp.Data.CannotCode) == miguAuthCannotCode {
+				return nil, fmt.Errorf("%w: %s", ErrAuthRequired, miguListenResponseMessage(resp))
+			}
+		}
+		for _, resp := range responses {
 			if message := strings.TrimSpace(miguListenResponseMessage(resp)); message != "empty download url" {
 				if fetchErr != nil {
 					return nil, errors.New(message)
@@ -200,7 +216,8 @@ type miguListenResponse struct {
 		DialogInfo struct {
 			Text string `json:"text"`
 		} `json:"dialogInfo"`
-		SongItem MiguSongItem `json:"songItem"`
+		CannotCode string       `json:"cannotCode"`
+		SongItem   MiguSongItem `json:"songItem"`
 	} `json:"data"`
 }
 
@@ -227,6 +244,9 @@ func (m *Migu) fetchListenInfo(contentID, copyrightID, songID, albumID, resource
 	req.Header.Set("User-Agent", miguAndroidUA)
 	req.Header.Set("channel", miguAndroidChannel)
 	req.Header.Set("version", miguAndroidVersion)
+	if uid := strings.TrimSpace(m.uid); uid != "" {
+		req.Header.Set("uid", uid)
+	}
 	if cookie := strings.TrimSpace(m.cookie); cookie != "" {
 		req.Header.Set("Cookie", cookie)
 	}
