@@ -60,6 +60,10 @@ var miguEncryptedAppCode = []byte{
 	0xE3, 0xEA, 0x43, 0xC3, 0xE0, 0x58, 0x33, 0x83,
 }
 
+// ErrUnavailable reports that every listen request succeeded and Migu offered
+// no stream for the song; repeating the request cannot change the outcome.
+var ErrUnavailable = errors.New("migu song unavailable")
+
 // DownloadInfo describes a Migu audio stream. Z3D streams require
 // DecryptAudio with FileKey before they can be played or saved as audio.
 type DownloadInfo struct {
@@ -139,13 +143,16 @@ func (m *Migu) GetDownloadInfo(song *model.Song) (*DownloadInfo, error) {
 	if len(candidates) == 0 {
 		for _, resp := range responses {
 			if message := strings.TrimSpace(miguListenResponseMessage(resp)); message != "empty download url" {
-				return nil, errors.New(message)
+				if fetchErr != nil {
+					return nil, errors.New(message)
+				}
+				return nil, fmt.Errorf("%w: %s", ErrUnavailable, message)
 			}
 		}
 		if fetchErr != nil {
 			return nil, fetchErr
 		}
-		return nil, errors.New("migu returned no download quality")
+		return nil, ErrUnavailable
 	}
 	if fetchErr != nil {
 		return nil, fmt.Errorf("migu returned no accessible download quality: %w", fetchErr)

@@ -2,6 +2,7 @@ package migu
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -330,5 +331,35 @@ func TestLiveMiguFLACDownload(t *testing.T) {
 		if err := os.WriteFile(outputPath, data, 0644); err != nil {
 			t.Fatalf("write output error = %v", err)
 		}
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestGetDownloadInfoUnavailable(t *testing.T) {
+	transport := http.DefaultTransport
+	defer func() { http.DefaultTransport = transport }()
+
+	refused := `{"code":"000000","info":"操作成功","data":{"dialogInfo":{"text":"因版权原因暂不支持"}}}`
+	failTone := ""
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if failTone != "" && req.URL.Query().Get("toneFlag") == failTone {
+			return nil, errors.New("connection reset")
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(refused))}, nil
+	})
+
+	song := &model.Song{Source: "migu", ID: "content|2|SQ"}
+	_, err := New("").GetDownloadInfo(song)
+	if !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "因版权原因暂不支持") {
+		t.Fatalf("err = %v, want ErrUnavailable with the server message", err)
+	}
+
+	failTone = "PQ"
+	_, err = New("").GetDownloadInfo(song)
+	if err == nil || errors.Is(err, ErrUnavailable) {
+		t.Fatalf("err = %v, want a retryable error when a listen request failed", err)
 	}
 }
